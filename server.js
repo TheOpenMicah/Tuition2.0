@@ -2,22 +2,23 @@ const express = require('express');
 const sqlite3 = require('sqlite3').verbose();
 const bodyParser = require('body-parser');
 const cors = require('cors');
-const path = require('path'); // Import the 'path' module
+const path = require('path');
 const app = express();
 
 // --- CONFIGURATION ---
-// Use the PORT environment variable provided by Render, or default to 3000 for local development
 const PORT = process.env.PORT || 3000;
-// Use the DB_PATH environment variable for the database location, or default to a local file
-const DB_PATH = process.env.DB_PATH || './responses.db';
-// This is the password for viewing the responses page. CHANGE THIS to something secure!
-const ADMIN_PASSWORD = 'CorrectHorseBatteryStaple'; 
+// On Render, the database needs to be in a persistent storage location.
+// We'll use an environment variable to set this path on the server.
+const DB_PATH = process.env.DB_PATH || path.join(__dirname, 'responses.db');
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'CorrectHorseBatteryStaple'; // Use environment variable for password
 
 // --- MIDDLEWARE ---
 app.use(cors());
 app.use(bodyParser.json());
-// Serve static files (HTML, CSS, video) from the 'public' directory
-app.use(express.static(path.join(__dirname, 'public')));
+// Serve all static files (like index.html) from the root directory.
+// This is simpler and works well for your project structure.
+app.use(express.static(path.join(__dirname)));
+
 
 // --- DATABASE INITIALIZATION ---
 const db = new sqlite3.Database(DB_PATH, (err) => {
@@ -28,7 +29,7 @@ const db = new sqlite3.Database(DB_PATH, (err) => {
     db.run(`CREATE TABLE IF NOT EXISTS responses (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       parentName TEXT,
-      childAge INTEGER,
+      childAge TEXT,
       tuitionReason TEXT,
       needs TEXT,
       otherNeeds TEXT,
@@ -44,14 +45,15 @@ const db = new sqlite3.Database(DB_PATH, (err) => {
 
 // --- API ROUTES ---
 
-// API to submit a new response from the form
+// API to submit the form
 app.post('/api/submit', (req, res) => {
-  const {
-    parentName, childAge, tuitionReason, needs, otherNeeds, contactMethod, phoneNumber, emailAddress, otherContact
-  } = req.body;
+  const { parentName, childAge, tuitionReason, needs, otherNeeds, contactMethod, phoneNumber, emailAddress, otherContact } = req.body;
+  // Convert array of 'needs' to a comma-separated string for database storage
+  const needsString = Array.isArray(needs) ? needs.join(', ') : needs;
+  
   db.run(
     `INSERT INTO responses (parentName, childAge, tuitionReason, needs, otherNeeds, contactMethod, phoneNumber, emailAddress, otherContact) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [parentName, childAge, tuitionReason, needs, otherNeeds, contactMethod, phoneNumber, emailAddress, otherContact],
+    [parentName, childAge, tuitionReason, needsString, otherNeeds, contactMethod, phoneNumber, emailAddress, otherContact],
     function (err) {
       if (err) {
         console.error('Database insert error:', err);
@@ -63,16 +65,15 @@ app.post('/api/submit', (req, res) => {
   );
 });
 
-// API to get all responses (now requires password)
+// API to get all responses (requires password)
 app.post('/api/responses', (req, res) => {
   const { password } = req.body;
-  console.log('Password received:', password); // Debug log
-  // Securely check the password on the server
+
   if (password !== ADMIN_PASSWORD) {
     return res.status(401).json({ error: 'Incorrect password' });
   }
 
-  db.all('SELECT * FROM responses', [], (err, rows) => {
+  db.all('SELECT * FROM responses ORDER BY actioned ASC, submittedAt DESC', [], (err, rows) => {
     if (err) {
       res.status(500).json({ error: err.message });
     } else {
@@ -93,14 +94,41 @@ app.post('/api/actioned/:id', (req, res) => {
   });
 });
 
-// --- CATCH-ALL ROUTE ---
-// This makes sure that if a user refreshes a page, the server still sends the correct HTML file.
-app.get('*', (req, res) => {
-  res.sendFile(path.join(__dirname, 'public', 'index.html'));
+// API to mark a response as un-actioned
+app.post('/api/unactioned/:id', (req, res) => {
+  const id = req.params.id;
+  db.run('UPDATE responses SET actioned = 0 WHERE id = ?', [id], function (err) {
+    if (err) {
+      res.status(500).json({ error: err.message });
+    } else {
+      res.json({ success: true });
+    }
+  });
+});
+
+// API to delete all actioned responses
+app.post('/api/delete-actioned', (req, res) => {
+  const { password } = req.body;
+  if (password !== ADMIN_PASSWORD) {
+    return res.status(401).json({ error: 'Incorrect password' });
+  }
+  db.run('DELETE FROM responses WHERE actioned = 1', function (err) {
+    if (err) {
+      res.status(500).json({ error: err.message });
+    } else {
+      res.json({ success: true });
+    }
+  });
 });
 
 
-// --- START SERVER ---
+// --- HTML SERVING ---
+// Serve the main page
+app.get('/', (req, res) => {
+    res.sendFile(path.join(__dirname, 'index.html'));
+});
+
+// --- SERVER START ---
 app.listen(PORT, () => {
-  console.log(`Server running on http://localhost:${PORT}`);
+  console.log(`Server is running on port ${PORT}`);
 });
